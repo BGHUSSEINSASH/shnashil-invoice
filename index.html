@@ -79,6 +79,37 @@
     outline-offset: 4px;
   }
   .wm.hidden { display: none; }
+  /* ---------- صور المستخدم: إضافة/تحريك/تحجيم/حذف ---------- */
+  .user-img-wrap {
+    position: absolute;
+    z-index: 40;
+    touch-action: none;
+    cursor: move;
+    user-select: none;
+    -webkit-user-drag: none;
+  }
+  .user-img-wrap img {
+    width: 100%;
+    display: block;
+    pointer-events: none;
+    -webkit-user-drag: none;
+  }
+  .user-img-wrap .rz {
+    position: absolute; right: 0; bottom: 0;
+    width: 20px; height: 20px;
+    background: #2e4e8e; border: 2px solid #fff; border-radius: 50%;
+    cursor: nwse-resize; display: none;
+    box-shadow: 0 1px 5px rgba(0,0,0,.45);
+  }
+  .user-img-wrap .del {
+    position: absolute; right: 0; top: 0;
+    width: 22px; height: 22px; line-height: 18px;
+    background: #c0392b; color: #fff; border: 2px solid #fff; border-radius: 50%;
+    text-align: center; font-size: 13px; font-weight: bold; cursor: pointer;
+    display: none; box-shadow: 0 1px 5px rgba(0,0,0,.45);
+  }
+  .user-img-wrap.selected { outline: 2px dashed #2e4e8e; outline-offset: 3px; }
+  .user-img-wrap.selected .rz, .user-img-wrap.selected .del { display: block; }
   /* ---------- Watermark opacity control ---------- */
   .wm-ctrl {
     display: flex;
@@ -177,6 +208,9 @@
     .stage { overflow: visible; display: block; }
     .sheet { box-shadow: none; margin: 0; transform: none !important; }
     .hint { display: none; }
+    .user-img-wrap .rz, .user-img-wrap .del { display: none !important; }
+    .user-img-wrap.selected { outline: none !important; }
+    .wm.dragging { outline: none !important; }
     @page { size: 1547px 2226px; margin: 0; }
   }
 </style>
@@ -190,6 +224,8 @@
   <button onclick="doReset()" title="العودة للفاتورة الأصلية">↺ إعادة ضبط</button>
   <button onclick="doPrint()" title="طباعة الفاتورة">🖨 طباعة</button>
   <button onclick="doExport()" title="تنزيل نسخة HTML قابلة للفتح في أي جهاز">⬇ تصدير HTML</button>
+  <button onclick="openImagePicker(null)" title="إضافة صورة إلى الفاتورة (قابلة للتحريك والتحجيم والحذف)">🖼 إضافة صورة</button>
+  <input type="file" id="imgFileInput" accept="image/*" style="display:none">
   <button onclick="toggleEdit()" id="editBtn" title="تشغيل/إيقاف التعديل">✏ تعطيل التعديل</button>
   <span class="wm-ctrl" title="حدد نسبة شفافية اللوكو الخلفي">
     <label for="wmOpacity">💧 شفافية اللوكو</label>
@@ -246,7 +282,7 @@
     <div class="site" data-k="site" contenteditable="true">www.aldirah.com</div>
   </div>
 
-  <div class="hint">قابلة للتعديل: انقر على أي نص لتعديله</div>
+  <div class="hint">انقر على أي نص لتعديله — انقر مرتين على الشعار/الختم/العلامة المائية لاستبدالها — زر 🖼 لإضافة صورة جديدة</div>
 </div>
 </div>
 
@@ -322,7 +358,6 @@
     };
     try { wmEl.setPointerCapture(e.pointerId); } catch (err) {}
     wmEl.classList.add("dragging");
-    e.preventDefault();
   });
   wmEl.addEventListener("pointermove", function (e) {
     if (!wmDrag) return;
@@ -385,6 +420,7 @@
   function doSave() {
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify(collectFields()));
+      persistUserImages();
       note("✓ تم الحفظ");
     } catch (e) { note("تعذّر الحفظ"); }
   }
@@ -402,32 +438,6 @@
     location.reload();
   }
   function doPrint() { window.print(); }
-
-  // ===== Export self-contained HTML =====
-  function doExport() {
-    var clone = document.documentElement.cloneNode(true);
-    // strip toolbar from the exported copy
-    var tb = clone.querySelector(".toolbar");
-    if (tb) tb.remove();
-    var hint = clone.querySelector(".hint");
-    if (hint) hint.remove();
-    // remove old script tags (they reference this page's toolbar logic)
-    clone.querySelectorAll("script").forEach(function (s) { s.remove(); });
-    // bake current edits into the exported file
-    clone.querySelectorAll("[data-k]").forEach(function (el) {
-      el.removeAttribute("contenteditable");
-    });
-    // inject base64 images directly (already set via src on this page)
-    var html = "<!DOCTYPE html>\n" + clone.outerHTML;
-    var blob = new Blob([html], { type: "text/html;charset=utf-8" });
-    var a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "فاتورة_مطابقة_للاصل_مستقلة.html";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    note("✓ تم تصدير الملف");
-  }
 
   // ===== Toggle edit mode =====
   var editing = true;
@@ -448,6 +458,232 @@
     saveTimer = setTimeout(doSave, 800);
   });
 
+  // ================================================================
+  // ============  صور المستخدم: إضافة/تحريك/تحجيم/حذف  =============
+  // ================================================================
+  var USER_IMG_KEY = "invoice_user_images_v1";
+  var fileInput = document.getElementById("imgFileInput");
+  var pendingTarget = null; // null = صورة جديدة | عنصر موجودة للاستبدال
+  var selectedImg = null;
+
+  function openImagePicker(target) {
+    pendingTarget = target || null;
+    fileInput.value = "";
+    fileInput.click();
+  }
+  window.openImagePicker = openImagePicker;
+
+  fileInput.addEventListener("change", function () {
+    var f = fileInput.files && fileInput.files[0];
+    if (!f) return;
+    if (!/^image\//.test(f.type)) { note("الملف ليس صورة"); return; }
+    if (f.size > 3.5 * 1024 * 1024) { note("حجم الصورة كبير (الحد 3.5MB)"); return; }
+    var rd = new FileReader();
+    rd.onload = function () {
+      if (pendingTarget) { pendingTarget.src = rd.result; saveEmbeddedSrc(pendingTarget); }
+      else addUserImage(rd.result);
+      note("✓ تمت إضافة الصورة");
+    };
+    rd.readAsDataURL(f);
+  });
+
+  function clearImgSelection() {
+    if (selectedImg) { selectedImg.classList.remove("selected"); selectedImg = null; }
+  }
+  document.addEventListener("pointerdown", function (e) {
+    if (selectedImg && !selectedImg.contains(e.target)) clearImgSelection();
+  }, true);
+
+  function addUserImage(dataUri) {
+    var wrap = document.createElement("div");
+    wrap.className = "user-img-wrap";
+    wrap.style.left = Math.round((1547 - 380) / 2) + "px";
+    wrap.style.top = "960px";
+    wrap.style.width = "380px";
+    var img = document.createElement("img");
+    img.src = dataUri;
+    img.alt = "صورة";
+    var rz = document.createElement("span"); rz.className = "rz"; rz.title = "اسحب لتغيير الحجم";
+    var del = document.createElement("span"); del.className = "del"; del.textContent = "×"; del.title = "حذف الصورة";
+    wrap.appendChild(img); wrap.appendChild(rz); wrap.appendChild(del);
+    sheetEl.appendChild(wrap);
+    attachUserImgEvents(wrap, rz, del);
+    selectUserImg(wrap);
+    persistUserImages();
+  }
+
+  function selectUserImg(wrap) {
+    clearImgSelection();
+    selectedImg = wrap;
+    wrap.classList.add("selected");
+  }
+
+  function attachUserImgEvents(wrap, rz, del) {
+    var drag = null;
+    wrap.addEventListener("pointerdown", function (e) {
+      if (e.target === rz || e.target === del) return;
+      e.stopPropagation();
+      selectUserImg(wrap);
+      var sr = sheetEl.getBoundingClientRect();
+      drag = {
+        scale: (sr.width / 1547) || 1,
+        sx: e.clientX, sy: e.clientY,
+        ol: parseFloat(wrap.style.left) || 0,
+        ot: parseFloat(wrap.style.top) || 0
+      };
+      try { wrap.setPointerCapture(e.pointerId); } catch (err) {}
+    });
+    wrap.addEventListener("pointermove", function (e) {
+      if (!drag) return;
+      var nl = drag.ol + (e.clientX - drag.sx) / drag.scale;
+      var nt = drag.ot + (e.clientY - drag.sy) / drag.scale;
+      var wpx = wrap.offsetWidth, hpx = wrap.offsetHeight;
+      nl = Math.max(-wpx * 0.6, Math.min(nl, 1547 - wpx * 0.4));
+      nt = Math.max(-hpx * 0.6, Math.min(nt, 2226 - hpx * 0.4));
+      wrap.style.left = nl + "px";
+      wrap.style.top = nt + "px";
+    });
+    function endDrag() {
+      if (!drag) return;
+      drag = null;
+      persistUserImages();
+    }
+    wrap.addEventListener("pointerup", endDrag);
+    wrap.addEventListener("pointercancel", endDrag);
+
+    var rzDrag = null;
+    rz.addEventListener("pointerdown", function (e) {
+      e.stopPropagation();
+      selectUserImg(wrap);
+      var sr = sheetEl.getBoundingClientRect();
+      rzDrag = {
+        scale: (sr.width / 1547) || 1,
+        sx: e.clientX,
+        ow: wrap.offsetWidth
+      };
+      try { rz.setPointerCapture(e.pointerId); } catch (err) {}
+    });
+    rz.addEventListener("pointermove", function (e) {
+      if (!rzDrag) return;
+      var nw = rzDrag.ow + (e.clientX - rzDrag.sx) / rzDrag.scale;
+      nw = Math.max(40, Math.min(nw, 1547));
+      wrap.style.width = nw + "px";
+    });
+    function endRz() {
+      if (!rzDrag) return;
+      rzDrag = null;
+      persistUserImages();
+    }
+    rz.addEventListener("pointerup", endRz);
+    rz.addEventListener("pointercancel", endRz);
+
+    del.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (confirm("حذف هذه الصورة؟")) {
+        wrap.remove();
+        if (selectedImg === wrap) selectedImg = null;
+        persistUserImages();
+      }
+    });
+
+    // نقر مزدوج على الصورة = استبدالها بصورة أخرى
+    wrap.addEventListener("dblclick", function (e) {
+      e.stopPropagation();
+      openImagePicker(wrap.querySelector("img"));
+    });
+  }
+
+  // ---- حفظ واستعادة صور المستخدم ----
+  function persistUserImages() {
+    try {
+      var arr = [];
+      sheetEl.querySelectorAll(".user-img-wrap").forEach(function (w) {
+        var im = w.querySelector("img");
+        if (!im || !im.src || im.src.indexOf("data:") !== 0) return;
+        arr.push({ src: im.src, left: w.style.left, top: w.style.top, width: w.style.width });
+      });
+      localStorage.setItem(USER_IMG_KEY, JSON.stringify(arr));
+    } catch (e) { note("تعذّر حفظ الصور (المساحة ممتلئة)"); }
+  }
+  function restoreUserImages() {
+    try {
+      var raw = localStorage.getItem(USER_IMG_KEY);
+      if (!raw) return;
+      JSON.parse(raw).forEach(function (o) {
+        var wrap = document.createElement("div");
+        wrap.className = "user-img-wrap";
+        wrap.style.left = o.left; wrap.style.top = o.top; wrap.style.width = o.width;
+        var img = document.createElement("img");
+        img.src = o.src; img.alt = "صورة";
+        var rz = document.createElement("span"); rz.className = "rz";
+        var del = document.createElement("span"); del.className = "del"; del.textContent = "×";
+        wrap.appendChild(img); wrap.appendChild(rz); wrap.appendChild(del);
+        sheetEl.appendChild(wrap);
+        attachUserImgEvents(wrap, rz, del);
+      });
+    } catch (e) {}
+  }
+
+  // ================================================================
+  // ======  استبدال الصور المدمجة (شعار/ختم/علامة مائية) بالنقر المزدوج  ======
+  // ================================================================
+  var EMBED_KEY = "invoice_embedded_src_v1";
+  function saveEmbeddedSrc(imgEl) {
+    try {
+      var o = {};
+      try { o = JSON.parse(localStorage.getItem(EMBED_KEY) || "{}"); } catch (e) {}
+      if (imgEl.id === "logoImg") o.logo = imgEl.src;
+      else if (imgEl.id === "stampImg") o.stamp = imgEl.src;
+      else if (imgEl.id === "wmImg") o.wm = imgEl.src;
+      localStorage.setItem(EMBED_KEY, JSON.stringify(o));
+    } catch (e) {}
+  }
+  function restoreEmbeddedSrc() {
+    try {
+      var o = JSON.parse(localStorage.getItem(EMBED_KEY) || "{}");
+      if (o.logo) document.getElementById("logoImg").src = o.logo;
+      if (o.stamp) document.getElementById("stampImg").src = o.stamp;
+      if (o.wm) document.getElementById("wmImg").src = o.wm;
+    } catch (e) {}
+  }
+  [["logoImg"], ["stampImg"], ["wmImg"]].forEach(function (idArr) {
+    var el = document.getElementById(idArr[0]);
+    el.title = "انقر مرتين لاستبدال هذه الصورة";
+    el.addEventListener("dblclick", function () { openImagePicker(el); });
+  });
+
+  // ================================================================
+  // ============  التصدير: تضمين كل التعديلات والصور  =============
+  // ================================================================
+  function doExport() {
+    var clone = document.documentElement.cloneNode(true);
+    var tb = clone.querySelector(".toolbar");
+    if (tb) tb.remove();
+    var hint = clone.querySelector(".hint");
+    if (hint) hint.remove();
+    clone.querySelectorAll("script").forEach(function (s) { s.remove(); });
+    clone.querySelectorAll("[data-k]").forEach(function (el) {
+      el.removeAttribute("contenteditable");
+    });
+    clone.querySelectorAll(".user-img-wrap").forEach(function (w) {
+      w.classList.remove("selected");
+      var rz = w.querySelector(".rz"); if (rz) rz.remove();
+      var del = w.querySelector(".del"); if (del) del.remove();
+      w.style.cssText = "position:absolute;z-index:40;pointer-events:none;" +
+        "left:" + w.style.left + ";top:" + w.style.top + ";width:" + w.style.width + ";";
+    });
+    var html = "<!DOCTYPE html>\n" + clone.outerHTML;
+    var blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "فاتورة_مطابقة_للاصل_مستقلة.html";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    note("✓ تم تصدير الملف");
+  }
+  window.doExport = doExport;
+
   // ===== Init =====
   fitSheet();
   // restore saved edits if present
@@ -455,6 +691,8 @@
     var raw = localStorage.getItem(STORE_KEY);
     if (raw) applyFields(JSON.parse(raw));
   } catch (e) {}
+  restoreEmbeddedSrc();
+  restoreUserImages();
 </script>
 </body>
 </html>
