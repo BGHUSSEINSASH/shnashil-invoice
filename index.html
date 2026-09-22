@@ -116,6 +116,22 @@
   }
   .user-img-wrap.selected { outline: 2px dashed #2e4e8e; outline-offset: 3px; }
   .user-img-wrap.selected .rz, .user-img-wrap.selected .del { display: block; }
+  /* ---------- وضع تحريك كل العناصر ---------- */
+  .mv-grip {
+    position: absolute; top: -13px; right: -13px;
+    width: 26px; height: 26px;
+    background: #1f3a5f; color: #fff;
+    border: 2px solid #fff; border-radius: 50%;
+    display: none; align-items: center; justify-content: center;
+    font-size: 13px; cursor: grab;
+    z-index: 60; touch-action: none; user-select: none;
+    box-shadow: 0 1px 6px rgba(0,0,0,.45);
+  }
+  .mv-grip::after { content: "⠿"; }
+  .mv-grip:active { cursor: grabbing; }
+  .movable:hover > .mv-grip, body.move-mode .movable > .mv-grip { display: flex; }
+  .movable.dragging { outline: 2px dashed #2e4e8e !important; outline-offset: 4px; }
+  body.move-mode [data-k] { cursor: move; user-select: none; }
   /* ---------- Watermark opacity control ---------- */
   .wm-ctrl {
     display: flex;
@@ -215,8 +231,8 @@
     .sheet { box-shadow: none; margin: 0; transform: none !important; }
     .hint { display: none; }
     .user-img-wrap .rz, .user-img-wrap .del { display: none !important; }
-    .user-img-wrap.selected { outline: none !important; }
-    .wm.dragging { outline: none !important; }
+    .mv-grip { display: none !important; }
+    .user-img-wrap.selected, .movable.dragging, .wm.dragging { outline: none !important; }
     @page { size: 1547px 2226px; margin: 0; }
   }
 </style>
@@ -232,6 +248,7 @@
   <button onclick="doExport()" title="تنزيل نسخة HTML قابلة للفتح في أي جهاز">⬇ تصدير HTML</button>
   <button onclick="openImagePicker(null)" title="إضافة صورة إلى الفاتورة (قابلة للتحريك والتحجيم والحذف)">🖼 إضافة صورة</button>
   <input type="file" id="imgFileInput" accept="image/*" style="display:none">
+  <button onclick="toggleMoveMode()" id="mvBtn" title="تشغيل وضع تحريك كل عناصر الفاتورة">✥ تحريك العناصر</button>
   <button onclick="toggleEdit()" id="editBtn" title="تشغيل/إيقاف التعديل">✏ تعطيل التعديل</button>
   <span class="wm-ctrl" title="حدد نسبة شفافية اللوكو الخلفي">
     <label for="wmOpacity">💧 شفافية اللوكو</label>
@@ -288,7 +305,7 @@
     <div class="site" data-k="site" contenteditable="true">www.aldirah.com</div>
   </div>
 
-  <div class="hint">كل نص قابل للتعديل بالنقر — كل صورة (اللوكو/الختم/العلامة المائية/صورك) قابلة للسحب لتحريكها — نقر مزدوج على أي صورة لاستبدالها — 🖼 يضيف صورة جديدة</div>
+  <div class="hint">كل نص قابل للتعديل بالنقر — كل صورة قابلة للسحب مباشرة — لتحريك أي نص اضغط ✥ ثم اسحب المقبض ⠿ — نقر مزدوج على أي صورة لاستبدالها</div>
 </div>
 </div>
 
@@ -471,6 +488,8 @@
       localStorage.removeItem(WM_POS_KEY);
       localStorage.removeItem("invoice_logo_pos_v1");
       localStorage.removeItem("invoice_stamp_pos_v1");
+      localStorage.removeItem(MOVE_KEY);
+      localStorage.removeItem(MOVE_KEY + "_mode");
     } catch (e) {}
     location.reload();
   }
@@ -699,6 +718,9 @@
     var hint = clone.querySelector(".hint");
     if (hint) hint.remove();
     clone.querySelectorAll("script").forEach(function (s) { s.remove(); });
+    clone.querySelectorAll(".mv-grip").forEach(function (g) { g.remove(); });
+    var expBody = clone.querySelector("body");
+    if (expBody) expBody.classList.remove("move-mode");
     clone.querySelectorAll("[data-k]").forEach(function (el) {
       el.removeAttribute("contenteditable");
     });
@@ -720,6 +742,120 @@
     note("✓ تم تصدير الملف");
   }
   window.doExport = doExport;
+
+  // ================================================================
+  // ========  وضع تحريك كل العناصر (النصوص + التوقيع + التذييل)  ========
+  // ================================================================
+  var MOVE_KEY = "invoice_elem_pos_v1";
+  var moveMode = false;
+  try { moveMode = localStorage.getItem(MOVE_KEY + "_mode") === "1"; } catch (e) {}
+  var elemPos = {};
+  try { elemPos = JSON.parse(localStorage.getItem(MOVE_KEY) || "{}"); } catch (e) { elemPos = {}; }
+
+  // العناصر المتحركة: كل النصوص القابلة للتعديل + التوقيع + التذييل
+  var movableEls = [];
+  document.querySelectorAll("#sheet [data-k], #sheet .signature, #sheet .footer").forEach(function (el) {
+    if (el.classList.contains("hint")) return;
+    // الأبناء داخل التوقيع/التذييل يتحركون مع الحاوية
+    var anc = el.closest(".signature, .footer");
+    if (anc && anc !== el) return;
+    movableEls.push(el);
+    var grip = document.createElement("span");
+    grip.className = "mv-grip";
+    grip.title = "اسحب لتحريك هذا العنصر";
+    el.appendChild(grip);
+    // استعادة الموضع المحفوظ
+    var id = el.getAttribute("data-k") || el.className.split(" ")[0];
+    var p = elemPos[id];
+    if (p && typeof p.dx === "number") {
+      el.dataset.mvId = id;
+      el.style.position = "absolute";
+      var cs = getComputedStyle(el);
+      var baseR = parseFloat(cs.right) || 0;
+      var baseT = parseFloat(cs.top) || 0;
+      el.style.right = (baseR - p.dx) + "px";
+      el.style.top = (baseT + p.dy) + "px";
+      el.style.left = "auto";
+    }
+  });
+
+  function applyMoveMode() {
+    document.body.classList.toggle("move-mode", moveMode);
+    var b = document.getElementById("mvBtn");
+    if (b) b.textContent = moveMode ? "✓ وضع التحريك مفعّل" : "✥ تحريك العناصر";
+    movableEls.forEach(function (el) {
+      if (moveMode) { el.setAttribute("contenteditable", "false"); }
+      else if (editing) { el.setAttribute("contenteditable", "true"); }
+    });
+  }
+  function toggleMoveMode() {
+    moveMode = !moveMode;
+    try { localStorage.setItem(MOVE_KEY + "_mode", moveMode ? "1" : "0"); } catch (e) {}
+    applyMoveMode();
+  }
+  window.toggleMoveMode = toggleMoveMode;
+
+  // سحب العناصر عبر المقبض
+  movableEls.forEach(function (el) {
+    var grip = el.querySelector(".mv-grip");
+    if (!grip) return;
+    var id = el.getAttribute("data-k") || el.className.split(" ")[0];
+    el.dataset.mvId = id;
+    var mv = null;
+    grip.addEventListener("pointerdown", function (e) {
+      e.stopPropagation(); e.preventDefault();
+      if (!moveMode) return;
+      var sr = sheetEl.getBoundingClientRect();
+      var cs = getComputedStyle(el);
+      mv = {
+        scale: (sr.width / 1547) || 1,
+        sx: e.clientX, sy: e.clientY,
+        or: parseFloat(cs.right) || 0,
+        ot: parseFloat(cs.top) || 0
+      };
+      try { grip.setPointerCapture(e.pointerId); } catch (err) {}
+      el.classList.add("dragging");
+    });
+    grip.addEventListener("pointermove", function (e) {
+      if (!mv) return;
+      var dx = (e.clientX - mv.sx) / mv.scale;
+      var dy = (e.clientY - mv.sy) / mv.scale;
+      el.style.position = "absolute";
+      el.style.right = (mv.or - dx) + "px";
+      el.style.top = (mv.ot + dy) + "px";
+      el.style.left = "auto";
+    });
+    function endMv() {
+      if (!mv) return;
+      mv = null;
+      el.classList.remove("dragging");
+      var cs = getComputedStyle(el);
+      var baseR = null, baseT = null;
+      // نحفظ الإزاحة النسبية من الموضع الأصلي (نحسبها من أول مرة)
+      try {
+        var orig = elemPos[id] || { dx: 0, dy: 0, or0: null, ot0: null };
+        if (orig.or0 === null) { orig.or0 = mvOr0[id]; orig.ot0 = mvOt0[id]; }
+        var curR = parseFloat(cs.right) || 0;
+        var curT = parseFloat(cs.top) || 0;
+        orig.dx = orig.or0 - curR;
+        orig.dy = curT - orig.ot0;
+        elemPos[id] = orig;
+        localStorage.setItem(MOVE_KEY, JSON.stringify(elemPos));
+      } catch (err) {}
+    }
+    grip.addEventListener("pointerup", endMv);
+    grip.addEventListener("pointercancel", endMv);
+  });
+
+  // حفظ المواضع الأصلية قبل أي تحريك (من CSS)
+  var mvOr0 = {}, mvOt0 = {};
+  movableEls.forEach(function (el) {
+    var id = el.getAttribute("data-k") || el.className.split(" ")[0];
+    var cs = getComputedStyle(el);
+    mvOr0[id] = parseFloat(cs.right) || 0;
+    mvOt0[id] = parseFloat(cs.top) || 0;
+  });
+  applyMoveMode();
 
   // ===== Init =====
   fitSheet();
