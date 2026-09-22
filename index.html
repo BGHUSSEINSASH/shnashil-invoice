@@ -73,10 +73,16 @@
     -webkit-user-drag: none;
     opacity: 0.25; /* الافتراضي — يتم تجاوزه بالإعداد المختار */
   }
-  .wm.dragging {
+  .wm.dragging, .logo.dragging, .signature .stamp.dragging {
     z-index: 50;
     outline: 2px dashed #2e4e8e;
     outline-offset: 4px;
+  }
+  .logo, .signature .stamp {
+    cursor: move;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-drag: none;
   }
   .wm.hidden { display: none; }
   /* ---------- صور المستخدم: إضافة/تحريك/تحجيم/حذف ---------- */
@@ -282,7 +288,7 @@
     <div class="site" data-k="site" contenteditable="true">www.aldirah.com</div>
   </div>
 
-  <div class="hint">انقر على أي نص لتعديله — انقر مرتين على الشعار/الختم/العلامة المائية لاستبدالها — زر 🖼 لإضافة صورة جديدة</div>
+  <div class="hint">كل نص قابل للتعديل بالنقر — كل صورة (اللوكو/الختم/العلامة المائية/صورك) قابلة للسحب لتحريكها — نقر مزدوج على أي صورة لاستبدالها — 🖼 يضيف صورة جديدة</div>
 </div>
 </div>
 
@@ -334,53 +340,75 @@
   window.toggleWmDelete = toggleWmDelete;
   applyWmOn();
 
-  // restore saved position (otherwise stays at CSS default = center)
-  try {
-    var sp = JSON.parse(localStorage.getItem(WM_POS_KEY) || "null");
-    if (sp && typeof sp.left === "number" && typeof sp.top === "number") {
-      wmEl.style.left = sp.left + "px";
-      wmEl.style.top = sp.top + "px";
+  // ===== محرك السحب العام: يعمل على أي صورة (لوكو/ختم/علامة مائية) =====
+  function makeDraggable(el, key, opts) {
+    opts = opts || {};
+    var drag = null;
+    el.addEventListener("pointerdown", function (e) {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      if (opts.canDrag && !opts.canDrag()) return;
+      var sr = sheetEl.getBoundingClientRect();
+      var scale = (sr.width / 1547) || 1;
+      var cs = getComputedStyle(el);
+      var ol = parseFloat(el.style.left);
+      var ot = parseFloat(el.style.top);
+      if (isNaN(ol)) { ol = parseFloat(cs.left) || 0; el.style.left = ol + "px"; el.style.right = "auto"; }
+      if (isNaN(ot)) { ot = parseFloat(cs.top) || 0; el.style.top = ot + "px"; el.style.bottom = "auto"; }
+      drag = { scale: scale, sx: e.clientX, sy: e.clientY, ol: ol, ot: ot };
+      try { el.setPointerCapture(e.pointerId); } catch (err) {}
+      if (opts.onStart) opts.onStart();
+    });
+    el.addEventListener("pointermove", function (e) {
+      if (!drag) return;
+      var nl = drag.ol + (e.clientX - drag.sx) / drag.scale;
+      var nt = drag.ot + (e.clientY - drag.sy) / drag.scale;
+      if (opts.clamp) { var c = opts.clamp(nl, nt, el); nl = c.l; nt = c.t; }
+      el.style.left = nl + "px";
+      el.style.top = nt + "px";
+    });
+    function endDrag() {
+      if (!drag) return;
+      drag = null;
+      if (opts.onEnd) opts.onEnd();
+      try {
+        localStorage.setItem(key, JSON.stringify({ left: parseFloat(el.style.left) || 0, top: parseFloat(el.style.top) || 0 }));
+      } catch (err) {}
     }
-  } catch (e) {}
-
-  var wmDrag = null;
-  wmEl.addEventListener("pointerdown", function (e) {
-    if (!wmOn) return;
-    if (e.pointerType === "mouse" && e.button !== 0) return;
-    var sr = sheetEl.getBoundingClientRect();
-    var scale = (sr.width / 1547) || 1;
-    wmDrag = {
-      scale: scale,
-      sx: e.clientX,
-      sy: e.clientY,
-      ol: parseFloat(wmEl.style.left) || (1547 - wmEl.offsetWidth) / 2,
-      ot: parseFloat(wmEl.style.top) || (2226 - wmEl.offsetHeight) / 2
-    };
-    try { wmEl.setPointerCapture(e.pointerId); } catch (err) {}
-    wmEl.classList.add("dragging");
-  });
-  wmEl.addEventListener("pointermove", function (e) {
-    if (!wmDrag) return;
-    var nl = wmDrag.ol + (e.clientX - wmDrag.sx) / wmDrag.scale;
-    var nt = wmDrag.ot + (e.clientY - wmDrag.sy) / wmDrag.scale;
-    nl = Math.max(0, Math.min(nl, 1547 - wmEl.offsetWidth));
-    nt = Math.max(0, Math.min(nt, 2226 - wmEl.offsetHeight));
-    wmEl.style.left = nl + "px";
-    wmEl.style.top = nt + "px";
-  });
-  function endWmDrag() {
-    if (!wmDrag) return;
-    wmDrag = null;
-    wmEl.classList.remove("dragging");
+    el.addEventListener("pointerup", endDrag);
+    el.addEventListener("pointercancel", endDrag);
     try {
-      localStorage.setItem(WM_POS_KEY, JSON.stringify({
-        left: parseFloat(wmEl.style.left) || 0,
-        top: parseFloat(wmEl.style.top) || 0
-      }));
-    } catch (err) {}
+      var sp = JSON.parse(localStorage.getItem(key) || "null");
+      if (sp && typeof sp.left === "number" && typeof sp.top === "number") {
+        el.style.left = sp.left + "px";
+        el.style.top = sp.top + "px";
+        el.style.right = "auto";
+        el.style.bottom = "auto";
+      }
+    } catch (e) {}
   }
-  wmEl.addEventListener("pointerup", endWmDrag);
-  wmEl.addEventListener("pointercancel", endWmDrag);
+
+  var logoWrap = document.querySelector(".logo");
+  var stampImgEl = document.getElementById("stampImg");
+
+  makeDraggable(wmEl, WM_POS_KEY, {
+    canDrag: function () { return wmOn; },
+    onStart: function () { wmEl.classList.add("dragging"); },
+    onEnd: function () { wmEl.classList.remove("dragging"); },
+    clamp: function (nl, nt, el) {
+      return {
+        l: Math.max(0, Math.min(nl, 1547 - el.offsetWidth)),
+        t: Math.max(0, Math.min(nt, 2226 - el.offsetHeight))
+      };
+    }
+  });
+  makeDraggable(logoWrap, "invoice_logo_pos_v1", {
+    onStart: function () { logoWrap.classList.add("dragging"); },
+    onEnd: function () { logoWrap.classList.remove("dragging"); }
+  });
+  makeDraggable(stampImgEl, "invoice_stamp_pos_v1", {
+    onStart: function () { stampImgEl.classList.add("dragging"); },
+    onEnd: function () { stampImgEl.classList.remove("dragging"); }
+  });
 
   var STORE_KEY = "invoice_shanasheel_v1";
 
@@ -433,8 +461,17 @@
     } catch (e) { note("تعذّرت الاستعادة"); }
   }
   function doReset() {
-    if (!confirm("العودة إلى بيانات الفاتورة الأصلية؟ ستفقد تعديلاتك.")) return;
-    localStorage.removeItem(STORE_KEY);
+    if (!confirm("العودة إلى الفاتورة الأصلية؟ ستفقد كل تعديلاتك وصورك ومواقع الصور.")) return;
+    try {
+      localStorage.removeItem(STORE_KEY);
+      localStorage.removeItem(USER_IMG_KEY);
+      localStorage.removeItem(EMBED_KEY);
+      localStorage.removeItem(WM_OPACITY_KEY);
+      localStorage.removeItem(WM_ON_KEY);
+      localStorage.removeItem(WM_POS_KEY);
+      localStorage.removeItem("invoice_logo_pos_v1");
+      localStorage.removeItem("invoice_stamp_pos_v1");
+    } catch (e) {}
     location.reload();
   }
   function doPrint() { window.print(); }
